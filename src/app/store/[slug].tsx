@@ -57,7 +57,7 @@ export default function StoreScreen() {
   };
 
   const renderItem = ({ item }: { item: TiendeoCatalog }) => {
-    const previewImage = item.products?.[0]?.image ?? null;
+    const previewImage = item.previewImage ?? item.products?.[0]?.image ?? null;
 
     return (
       <Pressable style={styles.card} onPress={() => openCatalog(item)}>
@@ -78,7 +78,14 @@ export default function StoreScreen() {
 
           <Text style={styles.cardMeta}>ID: {item.id}</Text>
 
-          <Text style={styles.openText}>Открыть каталог</Text>
+          <View style={styles.cardFooter}>
+            <Text style={styles.productCount}>
+              {item.productCount != null
+                ? `${item.productCount} товаров`
+                : "Товары загружаются"}
+            </Text>
+            <Text style={styles.openText}>Открыть →</Text>
+          </View>
         </View>
       </Pressable>
     );
@@ -163,9 +170,20 @@ const styles = StyleSheet.create({
     color: "#666",
     marginBottom: 8,
   },
+  cardFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  productCount: {
+    fontSize: 13,
+    color: "#666",
+    fontWeight: "600",
+  },
   openText: {
     fontSize: 14,
-    fontWeight: "600",
+    fontWeight: "700",
     color: "#0a7",
   },
   error: {
