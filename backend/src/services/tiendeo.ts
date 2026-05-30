@@ -2,6 +2,8 @@ type TiendeoCatalog = {
   id: string;
   title: string;
   url: string;
+  productCount?: number;
+  previewImage?: string | null;
 };
 
 type TiendeoProduct = {
@@ -368,25 +370,6 @@ function productBelongsToBrand(product: TiendeoProduct, slug: string): boolean {
   return false;
 }
 
-async function catalogBelongsToBrand(
-  catalogId: string,
-  slug: string,
-): Promise<boolean> {
-  try {
-    const data = await fetchTiendeoCatalogProducts(catalogId);
-
-    if (data.products.length === 0) {
-      return false;
-    }
-
-    return data.products.some((product) =>
-      productBelongsToBrand(product, slug),
-    );
-  } catch {
-    return false;
-  }
-}
-
 function chooseBestProducts(
   nextDataProducts: TiendeoProduct[],
   jsonLdProducts: TiendeoProduct[],
@@ -431,13 +414,34 @@ export async function fetchTiendeoBrandCatalogs(slug: string) {
 
   const checks = await Promise.all(
     candidates.map(async (catalog) => {
-      const belongs = await catalogBelongsToBrand(catalog.id, slug);
-      return belongs ? catalog : null;
+      try {
+        const data = await fetchTiendeoCatalogProducts(catalog.id);
+        const belongs =
+          data.products.length > 0 &&
+          data.products.some((product) => productBelongsToBrand(product, slug));
+
+        return {
+          ...catalog,
+          belongs,
+          productCount: data.products.length,
+          previewImage:
+            data.products.find((product) => product.image)?.image ?? null,
+        };
+      } catch {
+        return {
+          ...catalog,
+          belongs: false,
+          productCount: 0,
+          previewImage: null,
+        };
+      }
     }),
   );
 
-  const filtered = checks.filter(Boolean) as TiendeoCatalog[];
-  const catalogs = filtered.length > 0 ? filtered : candidates.slice(0, 3);
+  const filtered = checks.filter((catalog) => catalog.belongs);
+  const catalogs = (filtered.length > 0 ? filtered : checks.slice(0, 3)).map(
+    ({ belongs, ...catalog }) => catalog,
+  );
 
   return {
     brandSlug: slug,

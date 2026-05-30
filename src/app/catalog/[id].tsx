@@ -1,5 +1,5 @@
 import { useLocalSearchParams } from "expo-router";
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -11,7 +11,7 @@ import {
   View,
 } from "react-native";
 
-import { getCatalogPages, getCatalogProductsByPage } from "@/lib/api";
+import { getCatalogProducts } from "@/lib/api";
 import type {
   TiendeoCatalogPagesResponse,
   TiendeoCatalogProductsResponse,
@@ -29,6 +29,32 @@ function formatPrice(price?: number | null, currency?: string | null) {
   } catch {
     return `${price} ${currency || "EUR"}`;
   }
+}
+
+function buildPagesData(
+  catalogId: string,
+  catalogUrl: string,
+  products: TiendeoProduct[],
+): TiendeoCatalogPagesResponse {
+  const grouped = new Map<number, number>();
+
+  for (const product of products) {
+    const page = Number(product.flyerPage);
+    if (!Number.isFinite(page) || page < 1) continue;
+    grouped.set(page, (grouped.get(page) ?? 0) + 1);
+  }
+
+  const pages = Array.from(grouped.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([page, productCount]) => ({ page, productCount }));
+
+  return {
+    catalogId,
+    catalogUrl,
+    pageCount: pages.length,
+    totalProducts: products.length,
+    pages,
+  };
 }
 
 const ProductCard = memo(function ProductCard({
@@ -57,9 +83,14 @@ const ProductCard = memo(function ProductCard({
           <Text style={styles.productDiscount}>Скидка: {item.discount}%</Text>
         )}
 
-        {item.validUntil && (
-          <Text style={styles.productMeta}>До: {item.validUntil}</Text>
-        )}
+        <View style={styles.productMetaRow}>
+          {item.flyerPage && (
+            <Text style={styles.productMeta}>Стр. {item.flyerPage}</Text>
+          )}
+          {item.validUntil && (
+            <Text style={styles.productMeta}>До: {item.validUntil}</Text>
+          )}
+        </View>
       </View>
     </View>
   );
@@ -75,28 +106,8 @@ export default function CatalogScreen() {
 
   const [selectedPage, setSelectedPage] = useState<number | null>(null);
 
-  const [loadingPages, setLoadingPages] = useState(true);
-  const [loadingProducts, setLoadingProducts] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  const loadPageProducts = useCallback(
-    async (catalogId: string, page: number) => {
-      setLoadingProducts(true);
-
-      try {
-        const result = await getCatalogProductsByPage(catalogId, page);
-        setProductsData(result);
-        setSelectedPage(page);
-      } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to load page products",
-        );
-      } finally {
-        setLoadingProducts(false);
-      }
-    },
-    [],
-  );
 
   useEffect(() => {
     if (!id) return;
@@ -104,26 +115,22 @@ export default function CatalogScreen() {
     let cancelled = false;
 
     async function loadInitial() {
-      setLoadingPages(true);
+      setLoading(true);
       setError(null);
+      setSelectedPage(null);
 
       try {
-        const pages = await getCatalogPages(String(id));
+        const products = await getCatalogProducts(String(id));
         if (cancelled) return;
 
-        setPagesData(pages);
-
-        const firstPage = pages.pages[0]?.page ?? null;
-        if (firstPage) {
-          await loadPageProducts(String(id), firstPage);
-        } else {
-          setProductsData({
-            catalogId: String(id),
-            catalogUrl: "",
-            count: 0,
-            products: [],
-          });
-        }
+        setProductsData(products);
+        setPagesData(
+          buildPagesData(
+            products.catalogId,
+            products.catalogUrl,
+            products.products,
+          ),
+        );
       } catch (err) {
         if (!cancelled) {
           setError(
@@ -132,7 +139,7 @@ export default function CatalogScreen() {
         }
       } finally {
         if (!cancelled) {
-          setLoadingPages(false);
+          setLoading(false);
         }
       }
     }
@@ -142,22 +149,27 @@ export default function CatalogScreen() {
     return () => {
       cancelled = true;
     };
-  }, [id, loadPageProducts]);
+  }, [id]);
 
-  const onSelectPage = useCallback(
-    (page: number) => {
-      if (!id || page === selectedPage) return;
-      loadPageProducts(String(id), page);
-    },
-    [id, selectedPage, loadPageProducts],
-  );
+  const visibleProducts = useMemo(() => {
+    const products = productsData?.products ?? [];
+    if (!selectedPage) return products;
+
+    return products.filter(
+      (product) => Number(product.flyerPage) === selectedPage,
+    );
+  }, [productsData?.products, selectedPage]);
+
+  const onSelectPage = useCallback((page: number | null) => {
+    setSelectedPage(page);
+  }, []);
 
   const renderProduct = useCallback(
     ({ item }: { item: TiendeoProduct }) => <ProductCard item={item} />,
     [],
   );
 
-  if (loadingPages) {
+  if (loading) {
     return (
       <View style={styles.center}>
         <ActivityIndicator />
@@ -166,7 +178,7 @@ export default function CatalogScreen() {
     );
   }
 
-  if (error && !pagesData) {
+  if (error && !productsData) {
     return (
       <View style={styles.center}>
         <Text style={styles.error}>Ошибка загрузки каталога</Text>
@@ -183,7 +195,8 @@ export default function CatalogScreen() {
         </Text>
 
         <Text style={styles.subtitle}>
-          Страниц с товарами: {pagesData?.pageCount ?? 0}
+          Всего товаров: {productsData?.count ?? 0} · страниц с товарами:{" "}
+          {pagesData?.pageCount ?? 0}
         </Text>
       </View>
 
@@ -193,6 +206,31 @@ export default function CatalogScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.pageSelectorContent}
         >
+          <Pressable
+            onPress={() => onSelectPage(null)}
+            style={[
+              styles.pageChip,
+              selectedPage == null && styles.pageChipActive,
+            ]}
+          >
+            <Text
+              style={[
+                styles.pageChipText,
+                selectedPage == null && styles.pageChipTextActive,
+              ]}
+            >
+              Все
+            </Text>
+            <Text
+              style={[
+                styles.pageChipMeta,
+                selectedPage == null && styles.pageChipTextActive,
+              ]}
+            >
+              {productsData?.count ?? 0}
+            </Text>
+          </Pressable>
+
           {pagesData?.pages.map((pageItem) => {
             const isActive = pageItem.page === selectedPage;
 
@@ -226,35 +264,28 @@ export default function CatalogScreen() {
       </View>
 
       <View style={styles.pageInfo}>
-        <Text style={styles.pageInfoText}>Страница {selectedPage ?? "-"}</Text>
         <Text style={styles.pageInfoText}>
-          Товаров: {productsData?.count ?? 0}
+          {selectedPage ? `Страница ${selectedPage}` : "Все страницы"}
+        </Text>
+        <Text style={styles.pageInfoText}>
+          Показано: {visibleProducts.length} из {productsData?.count ?? 0}
         </Text>
       </View>
 
-      {loadingProducts ? (
-        <View style={styles.center}>
-          <ActivityIndicator />
-          <Text style={styles.helper}>Загружаю товары страницы…</Text>
-        </View>
-      ) : (
-        <FlatList
-          data={productsData?.products ?? []}
-          keyExtractor={(item, index) =>
-            `${item.name}-${item.flyerPage ?? "x"}-${index}`
-          }
-          renderItem={renderProduct}
-          contentContainerStyle={styles.list}
-          showsVerticalScrollIndicator={false}
-          ListEmptyComponent={
-            <View style={styles.center}>
-              <Text style={styles.helper}>
-                На этой странице товары не найдены.
-              </Text>
-            </View>
-          }
-        />
-      )}
+      <FlatList
+        data={visibleProducts}
+        keyExtractor={(item, index) =>
+          `${item.name}-${item.flyerPage ?? "x"}-${index}`
+        }
+        renderItem={renderProduct}
+        contentContainerStyle={styles.list}
+        showsVerticalScrollIndicator={false}
+        ListEmptyComponent={
+          <View style={styles.center}>
+            <Text style={styles.helper}>В этом каталоге товары не найдены.</Text>
+          </View>
+        }
+      />
     </View>
   );
 }
@@ -264,55 +295,65 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#f7f7f7",
   },
+  center: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
   header: {
-    paddingTop: 18,
-    paddingHorizontal: 16,
-    paddingBottom: 10,
     backgroundColor: "#fff",
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#ececec",
+    borderBottomColor: "#e8e8e8",
   },
   title: {
-    fontSize: 22,
-    fontWeight: "700",
-    marginBottom: 4,
+    fontSize: 23,
+    fontWeight: "800",
+    color: "#111",
   },
   subtitle: {
+    marginTop: 6,
     fontSize: 14,
     color: "#666",
   },
   pageSelectorWrap: {
     backgroundColor: "#fff",
-    paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: "#ececec",
+    borderBottomColor: "#e8e8e8",
   },
   pageSelectorContent: {
-    paddingHorizontal: 12,
-    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 10,
   },
   pageChip: {
-    minWidth: 52,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 14,
-    backgroundColor: "#f1f1f1",
+    minWidth: 58,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "#f1f1f1",
+    borderWidth: 1,
+    borderColor: "#e2e2e2",
   },
   pageChipActive: {
-    backgroundColor: "#0a7",
+    backgroundColor: "#00a876",
+    borderColor: "#00a876",
   },
   pageChipText: {
-    fontSize: 15,
-    fontWeight: "700",
+    fontSize: 14,
+    fontWeight: "800",
     color: "#222",
   },
   pageChipMeta: {
-    fontSize: 11,
-    color: "#666",
     marginTop: 2,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#777",
   },
   pageChipTextActive: {
     color: "#fff",
@@ -324,63 +365,63 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   pageInfoText: {
-    fontSize: 14,
+    fontSize: 13,
+    color: "#666",
     fontWeight: "600",
-    color: "#444",
   },
   list: {
-    paddingHorizontal: 16,
-    paddingBottom: 40,
+    padding: 16,
+    paddingBottom: 32,
+    gap: 12,
   },
   productCard: {
-    flexDirection: "row",
     backgroundColor: "#fff",
-    borderRadius: 14,
-    padding: 10,
-    marginBottom: 10,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: "#e8e8e8",
-    minHeight: 92,
+    overflow: "hidden",
+    flexDirection: "row",
   },
   productImage: {
-    width: 72,
-    height: 72,
-    borderRadius: 10,
-    backgroundColor: "#efefef",
-    marginRight: 10,
+    width: 116,
+    minHeight: 136,
+    resizeMode: "cover",
+    backgroundColor: "#f0f0f0",
   },
   imagePlaceholder: {
-    backgroundColor: "#efefef",
+    alignItems: "center",
+    justifyContent: "center",
   },
   productBody: {
     flex: 1,
-    justifyContent: "center",
+    padding: 14,
   },
   productName: {
-    fontSize: 14,
-    fontWeight: "700",
-    marginBottom: 4,
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#111",
   },
   productPrice: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#0a7",
-    marginBottom: 3,
+    marginTop: 8,
+    fontSize: 20,
+    fontWeight: "900",
+    color: "#00a876",
   },
   productDiscount: {
-    fontSize: 12,
-    color: "#d14",
-    marginBottom: 2,
+    marginTop: 6,
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#d64545",
+  },
+  productMetaRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 8,
   },
   productMeta: {
-    fontSize: 11,
-    color: "#666",
-  },
-  center: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 24,
+    fontSize: 12,
+    color: "#777",
   },
   error: {
     fontSize: 18,
@@ -390,7 +431,7 @@ const styles = StyleSheet.create({
   helper: {
     fontSize: 14,
     color: "#666",
-    textAlign: "center",
     marginTop: 6,
+    textAlign: "center",
   },
 });

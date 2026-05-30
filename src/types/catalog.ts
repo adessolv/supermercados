@@ -16,6 +16,7 @@ export type TiendeoCatalog = {
   title: string;
   url: string;
   productCount?: number;
+  previewImage?: string | null;
   products?: TiendeoProduct[];
 };
 
